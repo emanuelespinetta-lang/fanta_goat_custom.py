@@ -37,39 +37,38 @@ def trova_file(nome_target):
                 return os.path.join(root, f)
     return None
 
-@st.cache_data
+def pulisci_df(path):
+    if not path or not os.path.exists(path):
+        return pd.DataFrame()
+    d = pd.read_excel(path, header=1)
+    d.columns = d.columns.str.strip()
+    if 'Nome' in d.columns:
+        d['Nome'] = d['Nome'].astype(str).str.strip()
+    for c in ['Pv', 'Mv', 'Fm', 'Gf', 'Ass', 'Gs', 'Rp', 'Rc', 'Qt. A', 'Qt. I', 'FVM']:
+        if c in d.columns:
+            if d[c].dtype == object:
+                d[c] = d[c].astype(str).str.replace(',', '.')
+            d[c] = pd.to_numeric(d[c], errors='coerce').fillna(0.0)
+    return d
+
+@st.cache_data(ttl=60)
 def carica_master_dataset():
     f_stat27 = trova_file("Statistiche_Fantacalcio_Stagione_2026_27_Statistico.xlsx")
     f_stat26 = trova_file("Statistiche_Fantacalcio_Stagione_2025_26_Statistico.xlsx")
-    f_stat25 = trova_file("Statistiche_Fantacalcio_Stagione_2024_25_Statistico.xlsx")
     f_quot27 = trova_file("Quotazioni_Fantacalcio_Stagione_2026_27.xlsx")
     
-    def pulisci_df(path):
-        if not path or not os.path.exists(path):
-            return pd.DataFrame()
-        d = pd.read_excel(path, header=1)
-        d.columns = d.columns.str.strip()
-        if 'Nome' in d.columns:
-            d['Nome'] = d['Nome'].astype(str).str.strip()
-        for c in ['Pv', 'Mv', 'Fm', 'Gf', 'Ass', 'Gs', 'Rp', 'Rc', 'Qt. A', 'Qt. I', 'FVM']:
-            if c in d.columns:
-                if d[c].dtype == object:
-                    d[c] = d[c].astype(str).str.replace(',', '.')
-                d[c] = pd.to_numeric(d[c], errors='coerce').fillna(0.0)
-        return d
-
     df27 = pulisci_df(f_stat27)
     df26 = pulisci_df(f_stat26)
-    df25 = pulisci_df(f_stat25)
     df_q = pulisci_df(f_quot27)
 
     if df27.empty:
         st.error("❌ File 2026/27 non trovato.")
         st.stop()
 
+    # Mappa ESCLUSIVA delle statistiche dell'anno scorso (2025/26)
     df26_map = df26.set_index('Nome')[['Fm', 'Mv', 'Pv', 'Gf', 'Ass']].to_dict('index') if not df26.empty else {}
-    df25_map = df25.set_index('Nome')[['Fm', 'Pv', 'Gf', 'Ass']].to_dict('index') if not df25.empty else {}
     
+    # Mappa FVM
     fvm_map = {}
     if not df_q.empty and 'Nome' in df_q.columns:
         col_fvm = 'FVM' if 'FVM' in df_q.columns else ('Qt. A' if 'Qt. A' in df_q.columns else 'Qt. I')
@@ -79,61 +78,55 @@ def carica_master_dataset():
     df27['Piazzati'] = df27['Nome'].map(PIAZZATI).fillna(0).astype(int)
     df27['FVM_Ufficiale'] = df27['Nome'].map(fvm_map).fillna(1.0)
 
-    # Liste separate: dati puramente dello scorso anno per la visualizzazione + dati di calcolo per il motore
     gol_scorso_anno, ass_scorso_anno, part_scorso_anno = [], [], []
     perf_list, cont_list = [], []
 
     for _, row in df27.iterrows():
         nome = row['Nome']
         fvm = row['FVM_Ufficiale']
-        d26 = df26_map.get(nome, {'Fm': 0.0, 'Mv': 0.0, 'Pv': 0, 'Gf': 0, 'Ass': 0})
-        d25 = df25_map.get(nome, {'Fm': 0.0, 'Pv': 0, 'Gf': 0, 'Ass': 0})
-
-        # 1. DATI VISUALIZZATI (Solo anno scorso 25/26 o 24/25 se nuovo)
-        if d26['Pv'] > 0:
-            gol_scorso_anno.append(int(d26['Gf']))
-            ass_scorso_anno.append(int(d26['Ass']))
-            part_scorso_anno.append(int(d26['Pv']))
-        elif d25['Pv'] > 0:
-            gol_scorso_anno.append(int(d25['Gf']))
-            ass_scorso_anno.append(int(d25['Ass']))
-            part_scorso_anno.append(int(d25['Pv']))
+        
+        # DATI MOSTRATI: SOLO ED ESCLUSIVAMENTE 2025/26
+        if nome in df26_map:
+            d26 = df26_map[nome]
+            gf = int(d26['Gf'])
+            ass = int(d26['Ass'])
+            pv = int(d26['Pv'])
+            fm26 = float(d26['Fm'])
         else:
-            gol_scorso_anno.append(0)
-            ass_scorso_anno.append(0)
-            part_scorso_anno.append(0)
+            gf, ass, pv, fm26 = 0, 0, 0, 0.0
 
-        # 2. CONTINUITÀ (0-100 basata sulle presenze negli anni interi)
-        presenze_tot = d26['Pv'] if d26['Pv'] > 0 else d25['Pv']
-        if presenze_tot >= 30:
+        gol_scorso_anno.append(gf)
+        ass_scorso_anno.append(ass)
+        part_scorso_anno.append(pv)
+
+        # CONTINUITÀ (0-100 basata solo sul campionato scorso)
+        if pv >= 30:
             cont = 100
-        elif presenze_tot > 0:
-            cont = max(40, int((presenze_tot / 38) * 100))
+        elif pv > 0:
+            cont = max(35, int((pv / 38) * 100))
         else:
-            cont = 70 if fvm > 20 else 40
+            cont = 60 if fvm >= 25 else (40 if fvm >= 10 else 20)
         cont_list.append(cont)
 
-        # 3. PERFORMANCE ATTESA (Algoritmo Predittivo Nascosto)
-        # Pondera: FVM ufficiale (40%) + Fm 25/26 (40%) + Impatto 26/27 (20%) + Bonus Piazzati
-        fm_base = d26['Fm'] if d26['Pv'] >= 10 else (d25['Fm'] if d25['Pv'] >= 10 else 5.5)
+        # PERFORMANCE ATTESA (Algoritmo Predittivo Nascosto)
+        # Combina Fm storica (se esistente) + FVM + Impatto parziale 2026/27 + bonus fermo
+        fm_base = fm26 if pv >= 10 else (5.2 + (fvm / 12.0))
         fm_live = row['Fm'] if row['Pv'] > 0 else fm_base
         
-        # Stima punteggio grezzo
-        score = (fm_base * 0.70) + (fm_live * 0.30)
+        score = (fm_base * 0.75) + (fm_live * 0.25)
         if row['Rigorista'] == 1:
-            score += 0.50
+            score += 0.45
         elif row['Rigorista'] == 2:
-            score += 0.20
+            score += 0.15
         if row['Piazzati'] == 1:
-            score += 0.25
+            score += 0.20
 
-        # Normalizzazione Performance 50-99
-        perf_normalizzata = int(min(99, max(50, 45 + (score - 5.0) * 14 + (fvm / 15.0))))
+        perf_normalizzata = int(min(99, max(50, 46 + (score - 5.0) * 13 + (fvm / 16.0))))
         perf_list.append(perf_normalizzata)
 
-    df27['Gol_Scorso_Anno'] = gol_scorso_anno
-    df27['Ass_Scorso_Anno'] = ass_scorso_anno
-    df27['Part_Scorso_Anno'] = part_scorso_anno
+    df27['Gol_25_26'] = gol_scorso_anno
+    df27['Ass_25_26'] = ass_scorso_anno
+    df27['Part_25_26'] = part_scorso_anno
     df27['Continuita'] = cont_list
     df27['Performance'] = perf_list
 
@@ -184,10 +177,9 @@ for _, r in df_calcolato.iterrows():
     fvm = r['FVM_Ufficiale']
     ruolo = r['R']
     
-    # Prezzo parametrato
     pr = fvm * fattore_scala
     if r['Rigorista'] == 1:
-        pr *= 1.12
+        pr *= 1.10
     if mod_difesa and ruolo == 'D':
         pr *= 1.15
 
@@ -195,13 +187,13 @@ for _, r in df_calcolato.iterrows():
 
 df_calcolato['Pr_Consig'] = prezzi
 
-# --- 5. INTERFACCIA A SCHEDE ---
+# --- 5. INTERFACCIA UTENTE ---
 tab_listone, tab_asta = st.tabs(["📋 Listone", "🔨 Asta Live"])
 
 with tab_listone:
     c_search, c_filter, c_order = st.columns([3, 2, 2])
     with c_search:
-        cerca = st.text_input("🔍 Cerca giocatore o squadra", placeholder="Es. Martinez L., Roma, Dimarco...")
+        cerca = st.text_input("🔍 Cerca giocatore o squadra", placeholder="Es. Martinez L., Dimarco, Inter...")
     with c_filter:
         filtro_r = st.selectbox("Filtra Ruolo", ["Tutti", "P", "D", "C", "A"])
     with c_order:
@@ -210,9 +202,9 @@ with tab_listone:
     col_map = {
         "Performance": "Performance", 
         "Pr. Consig.": "Pr_Consig", 
-        "Gol": "Gol_Scorso_Anno", 
-        "Assist": "Ass_Scorso_Anno", 
-        "Partite": "Part_Scorso_Anno"
+        "Gol": "Gol_25_26", 
+        "Assist": "Ass_25_26", 
+        "Partite": "Part_25_26"
     }
     
     view_df = df_calcolato[~df_calcolato['Chiamato']].copy()
@@ -223,15 +215,15 @@ with tab_listone:
 
     view_df = view_df.sort_values(by=col_map[ordina_per], ascending=False)
 
-    colonne_finali = ['Nome', 'Squadra', 'R', 'Pr_Consig', 'Performance', 'Continuita', 'Gol_Scorso_Anno', 'Ass_Scorso_Anno', 'Part_Scorso_Anno']
+    colonne_finali = ['Nome', 'Squadra', 'R', 'Pr_Consig', 'Performance', 'Continuita', 'Gol_25_26', 'Ass_25_26', 'Part_25_26']
     st.dataframe(
         view_df[colonne_finali].rename(columns={
             'Pr_Consig': 'Pr. Consig. (cr)',
             'Performance': 'Performance /100',
             'Continuita': 'Continuità /100',
-            'Gol_Scorso_Anno': 'Gol (25/26)',
-            'Ass_Scorso_Anno': 'Assist (25/26)',
-            'Part_Scorso_Anno': 'Partite (25/26)'
+            'Gol_25_26': 'Gol',
+            'Ass_25_26': 'Assist',
+            'Part_25_26': 'Partite'
         }),
         use_container_width=True,
         hide_index=True
