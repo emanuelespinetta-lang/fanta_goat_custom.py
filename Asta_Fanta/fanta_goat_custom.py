@@ -51,27 +51,29 @@ def carica_dati():
     nome_file = "Statistiche_Fantacalcio_Stagione_2026_27_Statistico.xlsx"
     percorso_esatto = None
     
-    # Il radar cerca il file ovunque nel progetto
     for root, dirs, files in os.walk('.'):
         if nome_file in files:
             percorso_esatto = os.path.join(root, nome_file)
             break
             
-    # Forza la lettura ignorando la prima riga di titolo (header=1)
     df = pd.read_excel(percorso_esatto, header=1)
-    
-    # Pulisce eventuali spazi vuoti accidentali nei nomi delle colonne
     df.columns = df.columns.str.strip()
     
-    cols_to_numeric = ['Pv', 'Mv', 'Fm', 'Gf', 'Ass']
+    # Gestione sicura di numeri con virgole o stringhe
+    cols_to_numeric = ['Pv', 'Mv', 'Fm', 'Gf', 'Gs', 'Rp', 'Rc']
     for col in cols_to_numeric:
-        df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+        if col in df.columns:
+            if df[col].dtype == object:
+                df[col] = df[col].astype(str).str.replace(',', '.')
+            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
         
-    df['Rigorista'] = df['Nome'].map(RIGORISTI).fillna(0)
-    df['Piazzati'] = df['Nome'].map(PIAZZATI).fillna(0)
+    df['Rigorista'] = df['Nome'].map(RIGORISTI).fillna(0).astype(int)
+    df['Piazzati'] = df['Nome'].map(PIAZZATI).fillna(0).astype(int)
     
-    df['GOAT_Score'] = df['Fm'] + np.where(df['Rigorista'] == 1, 0.4, np.where(df['Rigorista'] == 2, 0.15, 0))
-    df['GOAT_Score'] = df['GOAT_Score'] + np.where(df['Piazzati'] == 1, 0.2, 0)
+    # Calcolo GOAT Score
+    bonus_rig = np.where(df['Rigorista'] == 1, 0.4, np.where(df['Rigorista'] == 2, 0.15, 0.0))
+    bonus_piaz = np.where(df['Piazzati'] == 1, 0.2, 0.0)
+    df['GOAT_Score'] = df['Fm'] + bonus_rig + bonus_piaz
     
     return df
 
@@ -103,17 +105,19 @@ budget_pct = {'P': 0.08, 'D': 0.10, 'C': 0.22, 'A': 0.60}
 if mod_difesa:
     budget_pct = {'P': 0.08, 'D': 0.18, 'C': 0.19, 'A': 0.55}
 
-df_stats['Prezzo_Base'] = 1
-df_stats['Prezzo_Consigliato_Max'] = 1
+# Calcolo vettoriale dei prezzi per evitare conflitti di indicizzazione
+prezzi = []
+for idx, row in df_stats.iterrows():
+    r = row['R']
+    somma_goat = df_stats[df_stats['R'] == r]['GOAT_Score'].sum()
+    if somma_goat > 0 and r in budget_pct:
+        budget_reparto = budget_residuo_lega * budget_pct[r]
+        p_calc = (row['GOAT_Score'] / somma_goat) * budget_reparto
+        prezzi.append(max(1, int(round(p_calc))))
+    else:
+        prezzi.append(1)
 
-for ruolo in ['P', 'D', 'C', 'A']:
-    mask = df_stats['R'] == ruolo
-    somma_goat = df_stats.loc[mask, 'GOAT_Score'].sum()
-    if somma_goat > 0:
-        budget_reparto = budget_residuo_lega * budget_pct[ruolo]
-        df_stats.loc[mask, 'Prezzo_Consigliato_Max'] = (df_stats.loc[mask, 'GOAT_Score'] / somma_goat) * budget_reparto
-
-df_stats['Prezzo_Consigliato_Max'] = df_stats['Prezzo_Consigliato_Max'].apply(lambda x: max(1, int(x)))
+df_stats['Prezzo_Consigliato_Max'] = prezzi
 
 ruolo_scelto = st.selectbox("Filtra per Ruolo", ["Tutti", "P", "D", "C", "A"])
 if ruolo_scelto != "Tutti":
@@ -121,9 +125,9 @@ if ruolo_scelto != "Tutti":
 else:
     df_mostra = df_stats
 
+colonne_visibili = ['Nome', 'Squadra', 'R', 'Mv', 'Fm', 'GOAT_Score', 'Rigorista', 'Prezzo_Consigliato_Max']
 st.dataframe(
-    df_mostra[['Nome', 'Squadra', 'R', 'Mv', 'Fm', 'GOAT_Score', 'Rigorista', 'Prezzo_Consigliato_Max']]
-    .sort_values(by='Prezzo_Consigliato_Max', ascending=False)
-    .head(50), 
+    df_mostra[[c for c in colonne_visibili if c in df_mostra.columns]]
+    .sort_values(by='Prezzo_Consigliato_Max', ascending=False),
     use_container_width=True
 )
