@@ -48,27 +48,32 @@ PIAZZATI = {
 
 @st.cache_data
 def carica_dati():
-    # Trova automaticamente la cartella esatta dove si trova questo script
-    cartella_corrente = os.path.dirname(os.path.abspath(__file__))
-    percorso_file = os.path.join(cartella_corrente, "Statistiche_Fantacalcio_Stagione_2026_27.xlsx")
+    nome_file = "Statistiche_Fantacalcio_Stagione_2026_27.xlsx"
+    percorso_esatto = None
     
-    # Legge il file con il percorso assoluto blindato
-    df = pd.read_excel(percorso_file)
+    # Il radar: cerca il file ovunque nel progetto
+    for root, dirs, files in os.walk('.'):
+        if nome_file in files:
+            percorso_esatto = os.path.join(root, nome_file)
+            break
+            
+    if percorso_esatto is None:
+        st.error(f"❌ ERRORE: Non trovo il file '{nome_file}'. Controlla su GitHub di averlo caricato con questo nome esatto (maiuscole comprese).")
+        st.stop()
+        
+    df = pd.read_excel(percorso_esatto)
     
     if df.columns[0] == 'Statistiche Fantacalcio Stagione 2026 27':
         df.columns = df.iloc[0]
         df = df[1:].reset_index(drop=True)
     
-    # Pulizia colonne numeriche essenziali
     cols_to_numeric = ['Pv', 'Mv', 'Fm', 'Gf', 'Ass']
     for col in cols_to_numeric:
         df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
         
-    # Assegnazione gerarchie
     df['Rigorista'] = df['Nome'].map(RIGORISTI).fillna(0)
     df['Piazzati'] = df['Nome'].map(PIAZZATI).fillna(0)
     
-    # Calcolo GOAT Score base (FantaMedia attesa ponderata con bonus da fermo)
     df['GOAT_Score'] = df['Fm'] + np.where(df['Rigorista'] == 1, 0.4, np.where(df['Rigorista'] == 2, 0.15, 0))
     df['GOAT_Score'] = df['GOAT_Score'] + np.where(df['Piazzati'] == 1, 0.2, 0)
     
@@ -78,7 +83,6 @@ def carica_dati():
 st.set_page_config(page_title="Custom FantaGOAT", layout="wide")
 st.title("🐐 FantaGOAT Custom Dashboard")
 
-# Sidebar Parametri
 st.sidebar.header("Impostazioni Lega")
 partecipanti = st.sidebar.radio("Partecipanti", [10, 12], index=0)
 budget_iniziale = st.sidebar.number_input("Budget Iniziale", value=500)
@@ -86,7 +90,6 @@ mod_difesa = st.sidebar.checkbox("Modificatore Difesa", value=False)
 
 df_stats = carica_dati()
 
-# Inizializza variabili di stato per i crediti spesi (simulazione asta live)
 if 'spesa_totale_lega' not in st.session_state:
     st.session_state.spesa_totale_lega = 0
 
@@ -95,14 +98,11 @@ spesa_inserita = st.sidebar.number_input("Inserisci acquisto live (Crediti)", mi
 if st.sidebar.button("Registra Acquisto"):
     st.session_state.spesa_totale_lega += spesa_inserita
 
-# Calcolo Macro Economico
 budget_lega_totale = partecipanti * budget_iniziale
 budget_residuo_lega = budget_lega_totale - st.session_state.spesa_totale_lega
 
 st.metric(label="Budget Residuo Globale Lega", value=f"{budget_residuo_lega} cr")
 
-# Calcolo Dinamico Prezzi
-# Ripartizione teorica standard
 budget_pct = {'P': 0.08, 'D': 0.10, 'C': 0.22, 'A': 0.60}
 if mod_difesa:
     budget_pct = {'P': 0.08, 'D': 0.18, 'C': 0.19, 'A': 0.55}
@@ -114,13 +114,11 @@ for ruolo in ['P', 'D', 'C', 'A']:
     mask = df_stats['R'] == ruolo
     somma_goat = df_stats.loc[mask, 'GOAT_Score'].sum()
     if somma_goat > 0:
-        # Distribuisce il budget residuo proporzionalmente al GOAT score
         budget_reparto = budget_residuo_lega * budget_pct[ruolo]
         df_stats.loc[mask, 'Prezzo_Consigliato_Max'] = (df_stats.loc[mask, 'GOAT_Score'] / somma_goat) * budget_reparto
 
 df_stats['Prezzo_Consigliato_Max'] = df_stats['Prezzo_Consigliato_Max'].apply(lambda x: max(1, int(x)))
 
-# Filtri in app
 ruolo_scelto = st.selectbox("Filtra per Ruolo", ["Tutti", "P", "D", "C", "A"])
 if ruolo_scelto != "Tutti":
     df_mostra = df_stats[df_stats['R'] == ruolo_scelto]
