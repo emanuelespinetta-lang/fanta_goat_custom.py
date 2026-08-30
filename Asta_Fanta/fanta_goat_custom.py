@@ -1,9 +1,9 @@
 import pandas as pd
 import streamlit as st
 import numpy as np
+import os
 
 # --- 1. CONFIGURAZIONE E DIZIONARI TIRATORI ---
-# Mappatura estratta fedelmente dal tuo PDF
 RIGORISTI = {
     'Scamacca': 1, 'Krstovic': 2, 'Samardzic': 3,
     'Orsolini': 1, 'Bernardeschi': 2, 'Dovbyk': 3,
@@ -48,7 +48,13 @@ PIAZZATI = {
 
 @st.cache_data
 def carica_dati():
-    df = pd.read_excel("Asta_Fanta/Statistiche_Fantacalcio_Stagione_2026_27.xlsx")
+    # Trova automaticamente la cartella esatta dove si trova questo script
+    cartella_corrente = os.path.dirname(os.path.abspath(__file__))
+    percorso_file = os.path.join(cartella_corrente, "Statistiche_Fantacalcio_Stagione_2026_27.xlsx")
+    
+    # Legge il file con il percorso assoluto blindato
+    df = pd.read_excel(percorso_file)
+    
     if df.columns[0] == 'Statistiche Fantacalcio Stagione 2026 27':
         df.columns = df.iloc[0]
         df = df[1:].reset_index(drop=True)
@@ -63,7 +69,6 @@ def carica_dati():
     df['Piazzati'] = df['Nome'].map(PIAZZATI).fillna(0)
     
     # Calcolo GOAT Score base (FantaMedia attesa ponderata con bonus da fermo)
-    # Se un giocatore è rigorista tier 1, aggiungiamo un potenziale di +0.4 alla FM stimata
     df['GOAT_Score'] = df['Fm'] + np.where(df['Rigorista'] == 1, 0.4, np.where(df['Rigorista'] == 2, 0.15, 0))
     df['GOAT_Score'] = df['GOAT_Score'] + np.where(df['Piazzati'] == 1, 0.2, 0)
     
