@@ -5,7 +5,7 @@ import os
 
 st.set_page_config(page_title="FantaGOAT Custom", layout="wide", initial_sidebar_state="expanded")
 
-# --- 1. DIZIONARI TIRATORI ---
+# --- 1. TIRATORI E CALCI PIAZZATI ---
 RIGORISTI = {
     'Scamacca': 1, 'Krstovic': 2, 'Samardzic': 3, 'Orsolini': 1, 'Bernardeschi': 2, 'Dovbyk': 3,
     'Kevin Carlos': 1, 'Maldini': 2, 'Mina': 3, 'Da Cunha': 1, 'Douvikas': 2, 'Paz N.': 3,
@@ -39,37 +39,47 @@ def trova_file(nome_target):
 
 @st.cache_data
 def carica_master_dataset():
-    f_curr = trova_file("Statistiche_Fantacalcio_Stagione_2026_27_Statistico.xlsx")
-    f_prev1 = trova_file("Statistiche_Fantacalcio_Stagione_2025_26_Statistico.xlsx")
-    f_prev2 = trova_file("Statistiche_Fantacalcio_Stagione_2024_25_Statistico.xlsx")
+    f_stat27 = trova_file("Statistiche_Fantacalcio_Stagione_2026_27_Statistico.xlsx")
+    f_stat26 = trova_file("Statistiche_Fantacalcio_Stagione_2025_26_Statistico.xlsx")
+    f_stat25 = trova_file("Statistiche_Fantacalcio_Stagione_2024_25_Statistico.xlsx")
+    f_quot27 = trova_file("Quotazioni_Fantacalcio_Stagione_2026_27.xlsx")
     
     def pulisci_df(path):
         if not path or not os.path.exists(path):
             return pd.DataFrame()
         d = pd.read_excel(path, header=1)
         d.columns = d.columns.str.strip()
-        for c in ['Pv', 'Mv', 'Fm', 'Gf', 'Ass', 'Gs', 'Rp', 'Rc']:
+        for c in ['Pv', 'Mv', 'Fm', 'Gf', 'Ass', 'Gs', 'Rp', 'Rc', 'Qt. A', 'Qt. I', 'FVM']:
             if c in d.columns:
                 if d[c].dtype == object:
                     d[c] = d[c].astype(str).str.replace(',', '.')
                 d[c] = pd.to_numeric(d[c], errors='coerce').fillna(0.0)
         return d
 
-    df27 = pulisci_df(f_curr)
-    df26 = pulisci_df(f_prev1)
-    df25 = pulisci_df(f_prev2)
+    df27 = pulisci_df(f_stat27)
+    df26 = pulisci_df(f_stat26)
+    df25 = pulisci_df(f_stat25)
+    df_q = pulisci_df(f_quot27)
 
     if df27.empty:
-        st.error("File 2026/27 non trovato.")
+        st.error("❌ File statistiche 2026/27 non trovato.")
         st.stop()
 
+    # Mappe storiche
     df26_map = df26.set_index('Nome')[['Fm', 'Pv', 'Gf', 'Ass']].to_dict('index') if not df26.empty else {}
     df25_map = df25.set_index('Nome')[['Fm', 'Pv']].to_dict('index') if not df25.empty else {}
+    
+    # Mappa quotazioni ufficiali
+    fvm_map = {}
+    if not df_q.empty and 'Nome' in df_q.columns:
+        col_fvm = 'FVM' if 'FVM' in df_q.columns else ('Qt. A' if 'Qt. A' in df_q.columns else 'Qt. I')
+        fvm_map = df_q.set_index('Nome')[col_fvm].to_dict()
 
     df27['Rigorista'] = df27['Nome'].map(RIGORISTI).fillna(0).astype(int)
     df27['Piazzati'] = df27['Nome'].map(PIAZZATI).fillna(0).astype(int)
+    df27['Quotazione_Ufficiale'] = df27['Nome'].map(fvm_map).fillna(1.0)
 
-    # Calcolo Fm ponderata e storici
+    # Stabilizzazione FantaMedia: se stagione 26/27 ha < 5 partite, pesa lo storico 25/26
     fm_proiettata, continuita_list, gol_list, ass_list, part_list = [], [], [], [], []
 
     for _, row in df27.iterrows():
@@ -78,7 +88,6 @@ def carica_master_dataset():
         d26 = df26_map.get(nome, {'Fm': 0.0, 'Pv': 0, 'Gf': 0, 'Ass': 0})
         d25 = df25_map.get(nome, {'Fm': 0.0, 'Pv': 0})
 
-        # Totali storici per visualizzazione
         tot_gol = row['Gf'] + d26['Gf']
         tot_ass = row['Ass'] + d26['Ass']
         tot_pv = pv27 + d26['Pv']
@@ -86,19 +95,21 @@ def carica_master_dataset():
         ass_list.append(int(tot_ass))
         part_list.append(int(tot_pv))
 
-        # Media Ponderata Storica
-        if d26['Pv'] > 10 and d25['Pv'] > 10:
-            fm_calc = (fm27 * 0.15) + (d26['Fm'] * 0.55) + (d25['Fm'] * 0.30)
-            cont = 100 if d26['Pv'] >= 28 else int((d26['Pv'] / 38) * 100)
-        elif d26['Pv'] > 10:
-            fm_calc = (fm27 * 0.20) + (d26['Fm'] * 0.80)
-            cont = int((d26['Pv'] / 38) * 100)
+        # Calcolo Fm attesa normalizzata (evita FantaMedie da 13.0 su 1 partita)
+        if d26['Pv'] >= 10:
+            fm_calc = (d26['Fm'] * 0.85) + (fm27 * 0.15 if pv27 > 0 else 0)
+            cont = min(100, int((d26['Pv'] / 38) * 100))
+        elif d25['Pv'] >= 10:
+            fm_calc = (d25['Fm'] * 0.85)
+            cont = min(100, int((d25['Pv'] / 38) * 85))
         elif pv27 > 0:
-            fm_calc = fm27
-            cont = 60
+            # Nuovo acquisto / esordiente con 1-2 partite: ancora la Fm al FVM
+            q_val = df27.loc[df27['Nome'] == nome, 'Quotazione_Ufficiale'].values[0]
+            fm_calc = min(7.5, max(5.5, 5.0 + (q_val / 10.0)))
+            cont = 65
         else:
             fm_calc = 5.5
-            cont = 40
+            cont = 45
 
         fm_proiettata.append(fm_calc)
         continuita_list.append(cont)
@@ -109,18 +120,17 @@ def carica_master_dataset():
     df27['Tot_Ass'] = ass_list
     df27['Tot_Part'] = part_list
 
-    # GOAT Score (Performance)
-    bonus_rig = np.where(df27['Rigorista'] == 1, 0.45, np.where(df27['Rigorista'] == 2, 0.20, 0.0))
-    bonus_piaz = np.where(df27['Piazzati'] == 1, 0.25, 0.0)
+    # GOAT Score
+    bonus_rig = np.where(df27['Rigorista'] == 1, 0.40, np.where(df27['Rigorista'] == 2, 0.15, 0.0))
+    bonus_piaz = np.where(df27['Piazzati'] == 1, 0.20, 0.0)
     df27['GOAT_Score'] = df27['Fm_Proiettata'] + bonus_rig + bonus_piaz
 
-    # Normalizzazione Performance 0-100 per ruolo
+    # Performance normalizzata da 50 a 99
     for r in ['P', 'D', 'C', 'A']:
         m = df27['R'] == r
-        min_v = df27.loc[m, 'GOAT_Score'].min()
-        max_v = df27.loc[m, 'GOAT_Score'].max()
+        min_v, max_v = df27.loc[m, 'GOAT_Score'].min(), df27.loc[m, 'GOAT_Score'].max()
         if max_v > min_v:
-            df27.loc[m, 'Performance'] = ((df27.loc[m, 'GOAT_Score'] - min_v) / (max_v - min_v) * 45 + 55).astype(int)
+            df27.loc[m, 'Performance'] = ((df27.loc[m, 'GOAT_Score'] - min_v) / (max_v - min_v) * 44 + 55).astype(int)
         else:
             df27.loc[m, 'Performance'] = 60
 
@@ -128,45 +138,46 @@ def carica_master_dataset():
 
 df_master = carica_master_dataset()
 
-# --- 2. GESTIONE STATO ASTA ---
+# --- 2. STATO ASTA ---
 if 'spesa_totale' not in st.session_state:
     st.session_state.spesa_totale = 0
 if 'giocatori_chiamati' not in st.session_state:
     st.session_state.giocatori_chiamati = []
 
-# --- 3. SIDEBAR CONFIGURAZIONE ---
+# --- 3. SIDEBAR ---
 with st.sidebar:
-    st.title("⚙️ Setup Asta")
+    st.title("⚙️ Pannello Asta")
     partecipanti = st.radio("Partecipanti Lega", [10, 12], index=0)
-    budget_iniziale = st.number_input("Budget Iniziale Squadra", value=500, step=50)
+    budget_iniziale = st.number_input("Budget Singolo Team", value=500, step=50)
     mod_difesa = st.checkbox("Modificatore Difesa", value=False)
     
     st.markdown("---")
-    st.subheader("Registra Giocatore Chiamato")
+    st.subheader("Registra Acquisto")
     giocatori_disponibili = [g for g in df_master['Nome'].unique() if g not in st.session_state.giocatori_chiamati]
     giocatore_selezionato = st.selectbox("Giocatore battuto", ["-"] + sorted(giocatori_disponibili))
-    prezzo_effettivo = st.number_input("Prezzo finale pagato", min_value=1, value=1, step=1)
+    prezzo_effettivo = st.number_input("Prezzo pagato", min_value=1, value=1, step=1)
     
-    if st.button("Conferma Acquisto"):
-        if giocatore_selezionato != "-":
-            st.session_state.giocatori_chiamati.append(giocatore_selezionato)
-            st.session_state.spesa_totale += prezzo_effettivo
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("✅ Assegna"):
+            if giocatore_selezionato != "-":
+                st.session_state.giocatori_chiamati.append(giocatore_selezionato)
+                st.session_state.spesa_totale += prezzo_effettivo
+                st.rerun()
+    with c2:
+        if st.button("🔄 Reset"):
+            st.session_state.spesa_totale = 0
+            st.session_state.giocatori_chiamati = []
             st.rerun()
 
-    if st.button("Reset Asta"):
-        st.session_state.spesa_totale = 0
-        st.session_state.giocatori_chiamati = []
-        st.rerun()
-
-# --- 4. MOTORE VOR (VALUE OVER REPLACEMENT) ---
-budget_totale_lega = partecipanti * budget_iniziale
-budget_residuo = max(1, budget_totale_lega - st.session_state.spesa_totale)
-
-quota_reparto = {'P': 0.08, 'D': 0.10, 'C': 0.22, 'A': 0.60}
+# --- 4. ALGORITMO VALUTAZIONE (CALIBRATO SUL BUDGET SINGOLO) ---
+budget_per_squadra = budget_iniziale
+# Ripartizione target del budget da 500cr per una squadra tipo
+target_budget_ruolo = {'P': 0.08 * budget_per_squadra, 'D': 0.12 * budget_per_squadra, 'C': 0.25 * budget_per_squadra, 'A': 0.55 * budget_per_squadra}
 if mod_difesa:
-    quota_reparto = {'P': 0.08, 'D': 0.18, 'C': 0.19, 'A': 0.55}
+    target_budget_ruolo = {'P': 0.08 * budget_per_squadra, 'D': 0.20 * budget_per_squadra, 'C': 0.22 * budget_per_squadra, 'A': 0.50 * budget_per_squadra}
 
-slot_titolari = {'P': partecipanti * 1, 'D': partecipanti * 5, 'C': partecipanti * 5, 'A': partecipanti * 3}
+slot_titolari = {'P': partecipanti * 1, 'D': partecipanti * 4, 'C': partecipanti * 4, 'A': partecipanti * 3}
 
 df_calcolato = df_master.copy()
 df_calcolato['Chiamato'] = df_calcolato['Nome'].isin(st.session_state.giocatori_chiamati)
@@ -175,43 +186,42 @@ df_disponibili = df_calcolato[~df_calcolato['Chiamato']].copy()
 prezzi_consigliati = {}
 for ruolo in ['P', 'D', 'C', 'A']:
     sub = df_disponibili[df_disponibili['R'] == ruolo].sort_values(by='GOAT_Score', ascending=False)
-    n_titolari = slot_titolari[ruolo]
+    n_tit = slot_titolari[ruolo]
     
-    if len(sub) > n_titolari:
-        valore_rimpiazzo = sub.iloc[n_titolari - 1]['GOAT_Score']
-    else:
-        valore_rimpiazzo = sub['GOAT_Score'].min() if not sub.empty else 0
-
+    valore_rimpiazzo = sub.iloc[n_tit - 1]['GOAT_Score'] if len(sub) > n_tit else sub['GOAT_Score'].min()
     sub['VOR'] = (sub['GOAT_Score'] - valore_rimpiazzo).clip(lower=0)
     somma_vor = sub['VOR'].sum()
-    budget_ruolo = budget_residuo * quota_reparto[ruolo]
+    budget_reparto_singolo = target_budget_ruolo[ruolo]
 
     for _, r in sub.iterrows():
         if somma_vor > 0 and r['VOR'] > 0:
-            pr = 1 + (r['VOR'] / somma_vor) * (budget_ruolo - len(sub))
-            prezzi_consigliati[r['Nome']] = max(1, int(round(pr)))
+            # Calcolo proporzionale sul budget di reparto della singola squadra
+            pr = 1 + (r['VOR'] / somma_vor) * (budget_reparto_singolo * (n_tit / partecipanti) - (n_tit / partecipanti))
+            # Calibrazione sui top: un top A non può superare il 32-35% del budget (160-175 cr)
+            max_cap = 175 if ruolo == 'A' else (75 if ruolo == 'C' else 45)
+            prezzi_consigliati[r['Nome']] = min(max_cap, max(1, int(round(pr))))
         else:
             prezzi_consigliati[r['Nome']] = 1
 
 df_calcolato['Pr_Consig'] = df_calcolato['Nome'].map(prezzi_consigliati).fillna(1).astype(int)
 
-# --- 5. INTERFACCIA A SCHEDE (LISTONE / ASTA) ---
+# --- 5. INTERFACCIA UTENTE (LISTONE / ASTA) ---
 tab_listone, tab_asta = st.tabs(["📋 Listone", "🔨 Asta Live"])
 
 with tab_listone:
     c_search, c_filter, c_order = st.columns([3, 2, 2])
     with c_search:
-        cerca = st.text_input("🔍 Cerca giocatore", placeholder="Es. Martinez L., Dimarco...")
+        cerca = st.text_input("🔍 Cerca giocatore o squadra", placeholder="Es. Martinez L., Roma, Inter...")
     with c_filter:
-        filtro_r = st.selectbox("Ruolo", ["Tutti", "P", "D", "C", "A"])
+        filtro_r = st.selectbox("Filtra Ruolo", ["Tutti", "P", "D", "C", "A"])
     with c_order:
-        ordina_per = st.selectbox("Ordina per", ["Performance", "Pr. Consig.", "Gol", "Assist", "Partite"])
+        ordina_per = st.selectbox("Ordina per", ["Pr. Consig.", "Performance", "Gol", "Assist", "Partite"])
 
-    col_map = {"Performance": "Performance", "Pr. Consig.": "Pr_Consig", "Gol": "Tot_Gol", "Assist": "Tot_Ass", "Partite": "Tot_Part"}
+    col_map = {"Pr. Consig.": "Pr_Consig", "Performance": "Performance", "Gol": "Tot_Gol", "Assist": "Tot_Ass", "Partite": "Tot_Part"}
     
-    view_df = df_calcolato[~df_calcolato['Chiamato']]
+    view_df = df_calcolato[~df_calcolato['Chiamato']].copy()
     if cerca:
-        view_df = view_df[view_df['Nome'].str.contains(cerca, case=False, na=False)]
+        view_df = view_df[view_df['Nome'].str.contains(cerca, case=False, na=False) | view_df['Squadra'].str.contains(cerca, case=False, na=False)]
     if filtro_r != "Tutti":
         view_df = view_df[view_df['R'] == filtro_r]
 
@@ -220,11 +230,11 @@ with tab_listone:
     colonne_finali = ['Nome', 'Squadra', 'R', 'Pr_Consig', 'Performance', 'Continuita', 'Tot_Gol', 'Tot_Ass', 'Tot_Part']
     st.dataframe(
         view_df[colonne_finali].rename(columns={
-            'Pr_Consig': 'Pr. Consig.',
+            'Pr_Consig': 'Pr. Consig. (cr)',
             'Performance': 'Performance /100',
             'Continuita': 'Continuità /100',
-            'Tot_Gol': 'Gol Storici',
-            'Tot_Ass': 'Assist Storici',
+            'Tot_Gol': 'Gol',
+            'Tot_Ass': 'Assist',
             'Tot_Part': 'Partite'
         }),
         use_container_width=True,
@@ -232,7 +242,17 @@ with tab_listone:
     )
 
 with tab_asta:
-    st.metric("Crediti Totali Rimasti nella Lega", f"{budget_residuo} cr")
-    st.write(f"**Giocatori già assegnati:** {len(st.session_state.giocatori_chiamati)}")
+    totale_lega = partecipanti * budget_iniziale
+    residuo_lega = totale_lega - st.session_state.spesa_totale
+    
+    colA, colB, colC = st.columns(3)
+    colA.metric("Crediti Residui Lega", f"{residuo_lega} cr")
+    colB.metric("Crediti Spesi Totali", f"{st.session_state.spesa_totale} cr")
+    colC.metric("Giocatori Acquistati", f"{len(st.session_state.giocatori_chiamati)}")
+    
+    st.markdown("---")
+    st.subheader("Ultime Chiamate Registrate")
     if st.session_state.giocatori_chiamati:
-        st.write(", ".join(st.session_state.giocatori_chiamati[-10:]))
+        st.write(" • ".join(reversed(st.session_state.giocatori_chiamati[-15:])))
+    else:
+        st.info("Nessun giocatore acquistato finora. Inserisci i dati dalla barra laterale.")
