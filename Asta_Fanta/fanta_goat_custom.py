@@ -48,7 +48,7 @@ PIAZZATI = {
 
 @st.cache_data
 def carica_dati():
-    df = pd.read_excel("Statistiche_Fantacalcio_Stagione_2026_27.xlsx")
+    df = pd.read_excel("Asta_Fanta/Statistiche_Fantacalcio_Stagione_2026_27.xlsx")
     if df.columns[0] == 'Statistiche Fantacalcio Stagione 2026 27':
         df.columns = df.iloc[0]
         df = df[1:].reset_index(drop=True)
