@@ -48,7 +48,7 @@ PIAZZATI = {
 
 @st.cache_data
 def carica_dati():
-    nome_file = "Statistiche_Fantacalcio_Stagione_2026_27.xlsx"
+    nome_file = "Statistiche_Fantacalcio_Stagione_2026_27_Statistico.xlsx"
     percorso_esatto = None
     
     # Il radar: cerca il file ovunque nel progetto
