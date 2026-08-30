@@ -51,21 +51,17 @@ def carica_dati():
     nome_file = "Statistiche_Fantacalcio_Stagione_2026_27_Statistico.xlsx"
     percorso_esatto = None
     
-    # Il radar: cerca il file ovunque nel progetto
+    # Il radar cerca il file ovunque nel progetto
     for root, dirs, files in os.walk('.'):
         if nome_file in files:
             percorso_esatto = os.path.join(root, nome_file)
             break
             
-    if percorso_esatto is None:
-        st.error(f"❌ ERRORE: Non trovo il file '{nome_file}'. Controlla su GitHub di averlo caricato con questo nome esatto (maiuscole comprese).")
-        st.stop()
-        
-    df = pd.read_excel(percorso_esatto)
+    # Forza la lettura ignorando la prima riga di titolo (header=1)
+    df = pd.read_excel(percorso_esatto, header=1)
     
-    if df.columns[0] == 'Statistiche Fantacalcio Stagione 2026 27':
-        df.columns = df.iloc[0]
-        df = df[1:].reset_index(drop=True)
+    # Pulisce eventuali spazi vuoti accidentali nei nomi delle colonne
+    df.columns = df.columns.str.strip()
     
     cols_to_numeric = ['Pv', 'Mv', 'Fm', 'Gf', 'Ass']
     for col in cols_to_numeric:
